@@ -125,10 +125,10 @@ const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app
 const CLOUD_FUNCTION_URL = CLOUD_RUN_BASE + "/detectFaces";
 const SIGNED_URL_ENDPOINT = CLOUD_RUN_BASE + "/getUploadUrl";
 
-const LOCK_CODE_5 = 86753; // physical lock code
+const LOCK_CODE_5 = 86753; // physical lock code (5 digits)
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
 
-// max faces on menu
+// max faces on menu poster (we'll cap at 8)
 const MAX_SLOTS   = 8;
 
 // Potential Calories (whole body) range
@@ -322,6 +322,15 @@ async function detectFacesCloud(imgEl){
 
 /*** SIGNED-UPLOAD HELPERS (Cloud Run + GCS) ***/
 
+// map groupSize -> offset prefix shown to players (under-5 only)
+function calcOffsetPrefix(n){
+  if (n === 1) return "80000";
+  if (n === 2) return "86000";
+  if (n === 3) return "86700";
+  if (n === 4) return "86753";
+  return ""; // shouldn't be used for >=5
+}
+
 // ask Cloud Run for a temporary signed upload URL to menu_current.pdf
 async function getSignedUrlFromCloud(){
   statusMsg("🔐 requesting signed upload URL…");
@@ -337,6 +346,7 @@ async function getSignedUrlFromCloud(){
 
   const txt = await res.text();
   console.log("[upload] signed URL raw response:", res.status, txt);
+  statusMsg("signedURL status " + res.status);
 
   if(!res.ok){
     throw new Error("getSignedUrlFromCloud failed status " + res.status);
@@ -374,9 +384,11 @@ async function uploadToCloudSignedUrl(pdfBlob){
     });
 
     console.log("[upload] PUT response:", putRes.status, putRes.statusText);
+    statusMsg("PUT status " + putRes.status);
+
     if (!putRes.ok){
-      statusMsg("⚠ upload failed at PUT step (" + putRes.status + ")");
-      throw new Error("PUT signedUrl failed " + putRes.status);
+      statusMsg("⚠ upload failed PUT " + putRes.status);
+      throw new Error("PUT signedUrl failed " + putRes.status + " " + putRes.statusText);
     }
 
     statusMsg("✅ Menu live at QR link");
@@ -451,15 +463,18 @@ async function runPipeline(){
   const n = orderedByCalories.length;
   let digits = [];
   if (n>=5){
+    // n = 5,6,7,8...
+    // pad front with zeros if >5, then lock digits at end => same logic as before
     digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
   } else {
+    // n = 1..4 -> take the last n digits of LOCK_CODE_5
     digits = LOCK_DIGITS.slice(5-n);
   }
   for (let i=0;i<n;i++) {
     orderedByCalories[i].savoryDigit = digits[i];
   }
 
-  // Compute base puzzle math
+  // Compute base puzzle math (still shown in UI panel)
   const rawInt = parseInt(digits.join(''),10);
   const rawStr = digits.join('');
   rawEl.textContent = rawStr;
@@ -490,7 +505,7 @@ async function runPipeline(){
   // Shuffle for PDF so guests still have to arrange SMALL -> LARGER
   const shuffledForDisplay = shuffleArray([...displayCards]);
 
-  // Draw poster
+  // Draw poster w/ footer text logic based on group size
   const poster = await drawPoster(shuffledForDisplay, n);
 
   // Generate PDF bytes
@@ -528,43 +543,26 @@ async function runPipeline(){
   }
 }
 
-/*** helpers ***/
-function shuffleArray(arr){
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
+/*** Poster drawing with new footer rules ***/
+function calcFooterLines(groupSize){
+  // groupSize >=6 → ZERO message
+  if (groupSize >= 6){
+    return [
+      "Ignore any Savory Values of ZERO, that taste is not popular this season.",
+      "We suggest not choosing these humanoids."
+    ];
   }
-  return arr;
-}
 
-function cropCentered(imgEl, faceRect){
-  // expand detection box to include shoulders
-  const cx = faceRect.x + faceRect.w/2;
-  const cy = faceRect.y + faceRect.h/2;
-  const newW = faceRect.w * 2.0;
-  const newH = faceRect.h * 2.2;
-  const x = Math.max(0, Math.floor(cx - newW/2));
-  const y = Math.max(0, Math.floor(cy - newH*0.65));
-  const w = Math.floor(Math.min(newW, (imgEl.naturalWidth||imgEl.width) - x));
-  const h = Math.floor(Math.min(newH, (imgEl.naturalHeight||imgEl.height) - y));
+  // groupSize == 5 → no footer text at all
+  if (groupSize === 5){
+    return [];
+  }
 
-  const c = document.createElement('canvas');
-  c.width = Math.max(1,w);
-  c.height = Math.max(1,h);
-  c.getContext('2d').drawImage(imgEl,x,y,w,h,0,0,c.width,c.height);
-  return { image:c, rect:{x,y,w,h} };
-}
-
-function detSeed(rect,imgEl){
-  const mix=(h,x)=>(((h^x)>>>0)*16777619)>>>0;
-  let h=0x811c9dc5>>>0;
-  h=mix(h,rect.x|0);
-  h=mix(h,rect.y|0);
-  h=mix(h,rect.w|0);
-  h=mix(h,rect.h|0);
-  h=mix(h,(imgEl.naturalWidth|0));
-  h=mix(h,(imgEl.naturalHeight|0));
-  return h>>>0;
+  // groupSize < 5 → show offset rule
+  const prefix = calcOffsetPrefix(groupSize); // "80000", "86000", "86700", "86753"
+  return [
+    "Small lot auctions under 5 Livestock ADD " + prefix + " credits to your desired SAVORY DIGITS"
+  ];
 }
 
 async function drawPoster(slotsForDisplay, groupSize){
@@ -573,7 +571,7 @@ async function drawPoster(slotsForDisplay, groupSize){
   const rows=Math.ceil(slotsForDisplay.length/cols);
 
   const estCardsBottom = margin+160 + rows*(cardH+gapY);
-  const footerSpace = 200;
+  const footerSpace = 260;
   const H = Math.max(estCardsBottom + footerSpace, 2600);
 
   const cellW=(W-margin*2-gapX*(cols-1))/cols;
@@ -582,14 +580,17 @@ async function drawPoster(slotsForDisplay, groupSize){
   c.width=W; c.height=H;
   const ctx=c.getContext('2d');
 
+  // background
   ctx.fillStyle='#fff';
   ctx.fillRect(0,0,W,H);
 
+  // main title
   ctx.fillStyle='#000';
   ctx.font='bold 72px system-ui';
   ctx.textAlign='left';
   ctx.fillText('Galactic Tasting Menu — New for Upcoming Harvest!', margin, margin+10);
 
+  // subtitles centered
   ctx.font='32px system-ui';
   ctx.textAlign='center';
   ctx.fillText(
@@ -603,6 +604,7 @@ async function drawPoster(slotsForDisplay, groupSize){
     margin+110
   );
 
+  // draw cards
   ctx.textAlign='left';
   let top=margin+160, idx=0;
   for(let r=0;r<rows;r++){
@@ -640,33 +642,22 @@ async function drawPoster(slotsForDisplay, groupSize){
     top += cardH + gapY;
   }
 
-  let footerY = top + 40;
-  ctx.fillStyle='#777';
-  ctx.font='26px system-ui';
-  ctx.textAlign='left';
-
-  if (groupSize < 6){
-    ctx.fillText(
-      "Small lot auctions under 6 Livestock ADD 86000 credits to your desired SAVORY DIGITS",
-      margin,
-      footerY
-    );
-  } else {
-    ctx.fillText(
-      "Ignore any Savory Values of ZERO, that taste is not popular this season.",
-      margin,
-      footerY
-    );
-    ctx.fillText(
-      "We suggest not choosing these humanoids.",
-      margin,
-      footerY + 34
-    );
+  // footer
+  const footerLines = calcFooterLines(groupSize);
+  if (footerLines.length){
+    let footerY = top + 40;
+    ctx.fillStyle='#777';
+    ctx.font='26px system-ui';
+    ctx.textAlign='left';
+    for (let i=0;i<footerLines.length;i++){
+      ctx.fillText(footerLines[i], margin, footerY + i*34);
+    }
   }
 
   return c;
 }
 
+/*** tiny utilities ***/
 function drawWrapped(ctx,text,x,y,maxWidth,lineHeight){
   const words=text.split(' ');
   let line='', yy=y;
