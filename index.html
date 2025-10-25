@@ -120,7 +120,9 @@
 
 <script>
 /*** CONFIG ***/
-const CLOUD_FUNCTION_URL = "https://alien-face-service-791433334355.us-east4.run.app/detectFaces";
+const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app";
+const CLOUD_FUNCTION_URL = CLOUD_RUN_BASE + "/detectFaces";
+const SIGNED_URL_ENDPOINT = CLOUD_RUN_BASE + "/getUploadUrl"; // we'll call this to get signed URL
 
 const LOCK_CODE_5 = 86753; // physical lock code
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
@@ -309,6 +311,60 @@ async function detectFacesCloud(imgEl){
   return faces;
 }
 
+/*** SIGNED-UPLOAD HELPERS (Cloud Run + GCS) ***/
+
+// ask Cloud Run for a temporary signed upload URL to menu_current.pdf
+async function getSignedUrlFromCloud(){
+  const res = await fetch(SIGNED_URL_ENDPOINT, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({
+      contentType: "application/pdf"
+    })
+  });
+  if(!res.ok){
+    console.error("getSignedUrlFromCloud failed", res.status);
+    throw new Error("no signed url");
+  }
+  const data = await res.json();
+  if (!data.uploadUrl){
+    console.error("no uploadUrl field", data);
+    throw new Error("bad response");
+  }
+  return data.uploadUrl;
+}
+
+// PUT the generated PDF blob directly to the signed URL (overwrites menu_current.pdf in bucket)
+async function uploadToCloudSignedUrl(pdfBlob){
+  try {
+    statusMsg("☁ uploading menu…");
+
+    // 1. get a signed one-time PUT URL from Cloud Run
+    const signedUrl = await getSignedUrlFromCloud();
+
+    // 2. upload the PDF bytes
+    const putRes = await fetch(signedUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/pdf"
+      },
+      body: pdfBlob
+    });
+
+    if (!putRes.ok){
+      console.error("PUT signedUrl failed", putRes.status, putRes.statusText);
+      statusMsg("⚠ upload failed");
+      return;
+    }
+
+    // success!
+    statusMsg("✅ Menu live at QR link");
+  } catch(err){
+    console.error("uploadToCloudSignedUrl error", err);
+    statusMsg("⚠ upload error");
+  }
+}
+
 /*** Main pipeline ***/
 makeBtn.onclick = async () => {
   try {
@@ -393,9 +449,7 @@ async function runPipeline(){
   const offsetStr = String(offsetNum).padStart(5,'0');
   offEl.textContent = offsetStr;
 
-  // Now build final card objects for display
-  // We'll attach the savory word and the cut description,
-  // with special handling if savoryDigit === 0 OR savory word is "sweet".
+  // Build final card info for display
   const displayCards = orderedByCalories.map((slot, idx) => {
     const savoryWord = SAVORY_NAMES[ slot.savoryDigit % SAVORY_NAMES.length ];
     const lowQuality = (slot.savoryDigit === 0) || (savoryWord === "sweet");
@@ -414,10 +468,10 @@ async function runPipeline(){
     };
   });
 
-  // Shuffle for the PDF so guests still have to arrange SMALL -> LARGER
+  // Shuffle for PDF so guests still have to arrange SMALL -> LARGER
   const shuffledForDisplay = shuffleArray([...displayCards]);
 
-  // Draw the poster (footer now sits right AFTER cards, with padding)
+  // Draw poster
   const poster = await drawPoster(shuffledForDisplay, n);
 
   // Generate PDF bytes
@@ -432,13 +486,13 @@ async function runPipeline(){
     return;
   }
 
-  // Make a blob for local use + Wix upload
+  // Make a blob for upload + optional local save
   const blob = new Blob([pdfBytes], {type:"application/pdf"});
 
-  // 🚀 Upload automatically to Wix
-  await uploadToWix(blob);
+  // 1. Upload to Cloud Storage (via signed URL from Cloud Run)
+  await uploadToCloudSignedUrl(blob);
 
-  // Also download locally (backup / printing if you want)
+  // 2. Optional local download/backup
   try {
     const dl = document.createElement("a");
     dl.href = URL.createObjectURL(blob);
@@ -454,55 +508,6 @@ async function runPipeline(){
     w.print();
   }
 }
-
-/*** WIX UPLOAD SECTION ***/
-async function uploadToWix(pdfBlob){
-  try {
-    console.log("Uploading menu_current.pdf to Wix…");
-
-    // 1. Ask Wix backend for a signed upload URL.
-    // IMPORTANT:
-    // You must create /backend/http-functions.js on Wix with post_getSignedUploadUrl (see below)
-    const WIX_FUNCTION_URL = "https://www.canuxcape.com/_functions/getSignedUploadUrl";
-
-    const metaRes = await fetch(WIX_FUNCTION_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        fileName: "current_menu.pdf",
-        fileSize: pdfBlob.size,
-        mimeType: "application/pdf"
-      })
-    });
-
-    const { uploadUrl, error } = await metaRes.json();
-    if (error || !uploadUrl) {
-      console.error("❌ Could not get signed upload URL:", error);
-      statusMsg("⚠️ Upload URL error");
-      return;
-    }
-
-    // 2. Upload directly to Wix Media via signed URL
-    const putRes = await fetch(uploadUrl, {
-      method: "PUT",
-      headers: { "Content-Type": "application/pdf" },
-      body: pdfBlob
-    });
-
-    if (!putRes.ok) {
-      console.error("❌ Wix upload failed:", putRes.status, putRes.statusText);
-      statusMsg("⚠️ Upload failed");
-      return;
-    }
-
-    console.log("✅ Uploaded to Wix successfully!");
-    statusMsg("✅ Menu live on canuxcape.com/menu_current");
-  } catch(err){
-    console.error("❌ uploadToWix error", err);
-    statusMsg("⚠️ Upload exception");
-  }
-}
-/*** END WIX UPLOAD SECTION ***/
 
 /*** helpers ***/
 function shuffleArray(arr){
@@ -549,8 +554,7 @@ async function drawPoster(slotsForDisplay, groupSize){
   const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
   const rows=Math.ceil(slotsForDisplay.length/cols);
 
-  // We don't know final H yet because we want footer right below cards.
-  // We'll estimate height big enough:
+  // estimate total height: all cards plus footer space
   const estCardsBottom = margin+160 + rows*(cardH+gapY);
   const footerSpace = 200;
   const H = Math.max(estCardsBottom + footerSpace, 2600);
@@ -623,8 +627,7 @@ async function drawPoster(slotsForDisplay, groupSize){
     top += cardH + gapY;
   }
 
-  // now "top" is just after the last row of cards.
-  // We'll add footer text ~40px lower so it has nice breathing room.
+  // footer
   let footerY = top + 40;
   ctx.fillStyle='#777';
   ctx.font='26px system-ui';
