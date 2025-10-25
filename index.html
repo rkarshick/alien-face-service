@@ -204,7 +204,7 @@ function statusMsg(m){
 function setDims(w,h){ dimsEl.textContent = `${w}×${h}`; }
 function setFaces(n){ facesEl.textContent = String(n); }
 
-/*** Camera / file load ***/
+/*** CAMERA / FILE LOAD ***/
 startBtn.onclick = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -276,7 +276,49 @@ fileIn.onchange = e => {
   img.src = url;
 };
 
-/*** Vision call through Cloud Run ***/
+/*** CORE HELPERS NEEDED EARLY ***/
+
+// expand a face box to include shoulders and crop that region
+function cropCentered(imgEl, faceRect){
+  const cx = faceRect.x + faceRect.w/2;
+  const cy = faceRect.y + faceRect.h/2;
+  const newW = faceRect.w * 2.0;
+  const newH = faceRect.h * 2.2;
+  const x = Math.max(0, Math.floor(cx - newW/2));
+  const y = Math.max(0, Math.floor(cy - newH*0.65));
+  const w = Math.floor(Math.min(newW, (imgEl.naturalWidth||imgEl.width) - x));
+  const h = Math.floor(Math.min(newH, (imgEl.naturalHeight||imgEl.height) - y));
+
+  const c = document.createElement('canvas');
+  c.width = Math.max(1,w);
+  c.height = Math.max(1,h);
+  c.getContext('2d').drawImage(imgEl,x,y,w,h,0,0,c.width,c.height);
+  return { image:c, rect:{x,y,w,h} };
+}
+
+// deterministic-ish seed per face crop, used to pick Potential Calories
+function detSeed(rect,imgEl){
+  const mix=(h,x)=>(((h^x)>>>0)*16777619)>>>0;
+  let h=0x811c9dc5>>>0;
+  h=mix(h,rect.x|0);
+  h=mix(h,rect.y|0);
+  h=mix(h,rect.w|0);
+  h=mix(h,rect.h|0);
+  h=mix(h,(imgEl.naturalWidth|0));
+  h=mix(h,(imgEl.naturalHeight|0));
+  return h>>>0;
+}
+
+// groupSize -> offset prefix for footer when <5
+function calcOffsetPrefix(n){
+  if (n === 1) return "80000";
+  if (n === 2) return "86000";
+  if (n === 3) return "86700";
+  if (n === 4) return "86753";
+  return "";
+}
+
+/*** FACE DETECTION (Cloud Run) ***/
 async function imageToBase64NoPrefix(imgEl){
   return new Promise(resolve=>{
     const c = document.createElement('canvas');
@@ -320,18 +362,9 @@ async function detectFacesCloud(imgEl){
   return faces;
 }
 
-/*** SIGNED-UPLOAD HELPERS (Cloud Run + GCS) ***/
+/*** SIGNED UPLOAD HELPERS (Cloud Run + GCS) ***/
 
-// map groupSize -> offset prefix shown to players (under-5 only)
-function calcOffsetPrefix(n){
-  if (n === 1) return "80000";
-  if (n === 2) return "86000";
-  if (n === 3) return "86700";
-  if (n === 4) return "86753";
-  return ""; // shouldn't be used for >=5
-}
-
-// ask Cloud Run for a temporary signed upload URL to menu_current.pdf
+// ask Cloud Run for a temporary signed upload URL for menu_current.pdf
 async function getSignedUrlFromCloud(){
   statusMsg("🔐 requesting signed upload URL…");
   console.log("[upload] POST", SIGNED_URL_ENDPOINT);
@@ -367,10 +400,9 @@ async function getSignedUrlFromCloud(){
   return data.uploadUrl;
 }
 
-// PUT the generated PDF blob directly to the signed URL (overwrites menu_current.pdf in bucket)
+// do the actual PUT of the pdf blob to the signed URL
 async function uploadToCloudSignedUrl(pdfBlob){
   try {
-    // 1. get a signed one-time PUT URL from Cloud Run
     const signedUrl = await getSignedUrlFromCloud();
     console.log("[upload] got signedUrl:", signedUrl);
 
@@ -398,173 +430,33 @@ async function uploadToCloudSignedUrl(pdfBlob){
   }
 }
 
-/*** Main pipeline ***/
-makeBtn.onclick = async () => {
-  try {
-    await runPipeline();
-  } catch(e){
-    console.error("runPipeline error", e);
-    alert("Pipeline error. " + e.message);
+/*** PUZZLE HELPER LOGIC ***/
+function shuffleArray(arr){
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-};
-
-async function runPipeline(){
-  if (!snapshotImg){
-    alert("Take a photo or choose one first.");
-    return;
-  }
-  await snapshotImg.decode();
-
-  statusMsg("🔍 detecting faces…");
-
-  let faces = [];
-  try {
-    faces = await detectFacesCloud(snapshotImg);
-  } catch(e){
-    console.error("detectFacesCloud error", e);
-  }
-
-  if (!faces || !faces.length){
-    statusMsg("⚠️ 0 faces — fallback boxes");
-    const w=snapshotImg.naturalWidth,h=snapshotImg.naturalHeight;
-    const cw=Math.floor(w*0.22),ch=Math.floor(h*0.28);
-    const cy=Math.floor((h-ch)/2.2);
-    faces=[
-      {x:Math.floor(w*0.18),y:cy,w:cw,h:ch},
-      {x:Math.floor(w*0.60),y:cy,w:cw,h:ch}
-    ];
-  } else {
-    statusMsg(`👤 faces: ${faces.length}`);
-  }
-
-  setFaces(faces.length);
-
-  // limit to MAX_SLOTS
-  const kept = faces.slice(0, MAX_SLOTS);
-
-  // build slot data (crop + calories)
-  const slots = kept.map((r,i)=>{
-    const cropInfo = cropCentered(snapshotImg,r);
-    const seed = detSeed(cropInfo.rect, snapshotImg);
-    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole)
-    return {
-      img: cropInfo.image,
-      posX: cropInfo.rect.x,
-      P,
-      savoryDigit: 0, // will fill in later
-      classTitle: CLASS_TITLES[i % CLASS_TITLES.length]
-    };
-  });
-
-  // Sort (true size order) by Potential Calories ascending
-  const orderedByCalories = [...slots].sort((a,b)=> a.P===b.P ? a.posX-b.posX : a.P-b.P);
-
-  // Assign savory digits based on calorie order so puzzle math is stable
-  const n = orderedByCalories.length;
-  let digits = [];
-  if (n>=5){
-    // n = 5,6,7,8...
-    // pad front with zeros if >5, then lock digits at end => same logic as before
-    digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
-  } else {
-    // n = 1..4 -> take the last n digits of LOCK_CODE_5
-    digits = LOCK_DIGITS.slice(5-n);
-  }
-  for (let i=0;i<n;i++) {
-    orderedByCalories[i].savoryDigit = digits[i];
-  }
-
-  // Compute base puzzle math (still shown in UI panel)
-  const rawInt = parseInt(digits.join(''),10);
-  const rawStr = digits.join('');
-  rawEl.textContent = rawStr;
-
-  const offsetNum = (LOCK_CODE_5 - rawInt + 100000) % 100000;
-  const offsetStr = String(offsetNum).padStart(5,'0');
-  offEl.textContent = offsetStr;
-
-  // Build final card info for display
-  const displayCards = orderedByCalories.map((slot, idx) => {
-    const savoryWord = SAVORY_NAMES[ slot.savoryDigit % SAVORY_NAMES.length ];
-    const lowQuality = (slot.savoryDigit === 0) || (savoryWord === "sweet");
-
-    const cutDesc = lowQuality
-      ? CUT_LOW[ idx % CUT_LOW.length ]
-      : CUT_PREMIUM[ idx % CUT_PREMIUM.length ];
-
-    return {
-      img: slot.img,
-      P: slot.P,
-      classTitle: slot.classTitle,
-      savoryDigit: slot.savoryDigit,
-      savoryWord,
-      cutDesc
-    };
-  });
-
-  // Shuffle for PDF so guests still have to arrange SMALL -> LARGER
-  const shuffledForDisplay = shuffleArray([...displayCards]);
-
-  // Draw poster w/ footer text logic based on group size
-  const poster = await drawPoster(shuffledForDisplay, n);
-
-  // Generate PDF bytes
-  let pdfBytes;
-  try {
-    const { PDFDocument } = PDFLib;
-    if (!PDFDocument) throw new Error("no pdf-lib");
-    pdfBytes = await canvasToPdfBytes(poster);
-  } catch(e){
-    console.warn("PDF build error", e);
-    alert("PDF failed to build.");
-    return;
-  }
-
-  // Make a blob for upload + optional local save
-  const blob = new Blob([pdfBytes], {type:"application/pdf"});
-
-  // 1. Upload to Cloud Storage (via signed URL from Cloud Run)
-  await uploadToCloudSignedUrl(blob);
-
-  // 2. Optional local download/backup
-  try {
-    const dl = document.createElement("a");
-    dl.href = URL.createObjectURL(blob);
-    dl.download = "menu_current.pdf";
-    dl.click();
-  } catch(e){
-    console.warn("local download fallback", e);
-    const w = window.open();
-    const url = poster.toDataURL("image/png");
-    w.document.write('<img src="'+url+'" style="width:100%">');
-    w.document.close();
-    w.focus();
-    w.print();
-  }
+  return arr;
 }
 
-/*** Poster drawing with new footer rules ***/
+/*** POSTER FOOTER LINES ***/
 function calcFooterLines(groupSize){
-  // groupSize >=6 → ZERO message
   if (groupSize >= 6){
     return [
       "Ignore any Savory Values of ZERO, that taste is not popular this season.",
       "We suggest not choosing these humanoids."
     ];
   }
-
-  // groupSize == 5 → no footer text at all
   if (groupSize === 5){
     return [];
   }
-
-  // groupSize < 5 → show offset rule
-  const prefix = calcOffsetPrefix(groupSize); // "80000", "86000", "86700", "86753"
+  const prefix = calcOffsetPrefix(groupSize);
   return [
     "Small lot auctions under 5 Livestock ADD " + prefix + " credits to your desired SAVORY DIGITS"
   ];
 }
 
+/*** CANVAS → POSTER DRAW ***/
 async function drawPoster(slotsForDisplay, groupSize){
   const W=2000, margin=80, cols=2, gapX=28, gapY=32;
   const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
@@ -657,7 +549,7 @@ async function drawPoster(slotsForDisplay, groupSize){
   return c;
 }
 
-/*** tiny utilities ***/
+/*** TEXT / CANVAS UTIL ***/
 function drawWrapped(ctx,text,x,y,maxWidth,lineHeight){
   const words=text.split(' ');
   let line='', yy=y;
@@ -703,6 +595,150 @@ async function canvasToPdfBytes(canvas){
   const png = await pdf.embedPng(pngBytes);
   page.drawImage(png,{x:0,y:0,width:canvas.width,height:canvas.height});
   return await pdf.save();
+}
+
+/*** MAIN PIPELINE BUTTON ***/
+makeBtn.onclick = async () => {
+  try {
+    await runPipeline();
+  } catch(e){
+    console.error("runPipeline error", e);
+    alert("Pipeline error. " + e.message);
+  }
+};
+
+async function runPipeline(){
+  if (!snapshotImg){
+    alert("Take a photo or choose one first.");
+    return;
+  }
+  await snapshotImg.decode();
+
+  statusMsg("🔍 detecting faces…");
+
+  let faces = [];
+  try {
+    faces = await detectFacesCloud(snapshotImg);
+  } catch(e){
+    console.error("detectFacesCloud error", e);
+  }
+
+  if (!faces || !faces.length){
+    statusMsg("⚠️ 0 faces — fallback boxes");
+    const w=snapshotImg.naturalWidth,h=snapshotImg.naturalHeight;
+    const cw=Math.floor(w*0.22),ch=Math.floor(h*0.28);
+    const cy=Math.floor((h-ch)/2.2);
+    faces=[
+      {x:Math.floor(w*0.18),y:cy,w:cw,h:ch},
+      {x:Math.floor(w*0.60),y:cy,w:cw,h:ch}
+    ];
+  } else {
+    statusMsg(`👤 faces: ${faces.length}`);
+  }
+
+  setFaces(faces.length);
+
+  // limit to MAX_SLOTS
+  const kept = faces.slice(0, MAX_SLOTS);
+
+  // build slot data (crop + calories)
+  const slots = kept.map((r,i)=>{
+    const cropInfo = cropCentered(snapshotImg,r);
+    const seed = detSeed(cropInfo.rect, snapshotImg);
+    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole)
+    return {
+      img: cropInfo.image,
+      posX: cropInfo.rect.x,
+      P,
+      savoryDigit: 0,
+      classTitle: CLASS_TITLES[i % CLASS_TITLES.length]
+    };
+  });
+
+  // Sort by Potential Calories ascending
+  const orderedByCalories = [...slots].sort((a,b)=> a.P===b.P ? a.posX-b.posX : a.P-b.P);
+
+  // Assign savory digits based on calorie order
+  const n = orderedByCalories.length;
+  let digits = [];
+  if (n>=5){
+    // n=5,6,7,8...
+    digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
+  } else {
+    // n=1..4
+    digits = LOCK_DIGITS.slice(5-n);
+  }
+  for (let i=0;i<n;i++) {
+    orderedByCalories[i].savoryDigit = digits[i];
+  }
+
+  // Show debug puzzle math in UI panel
+  const rawInt = parseInt(digits.join(''),10);
+  const rawStr = digits.join('');
+  rawEl.textContent = rawStr;
+
+  const offsetNum = (LOCK_CODE_5 - rawInt + 100000) % 100000;
+  const offsetStr = String(offsetNum).padStart(5,'0');
+  offEl.textContent = offsetStr;
+
+  // Build final card info for poster
+  const displayCards = orderedByCalories.map((slot, idx) => {
+    const savoryWord = SAVORY_NAMES[ slot.savoryDigit % SAVORY_NAMES.length ];
+    const lowQuality = (slot.savoryDigit === 0) || (savoryWord === "sweet");
+
+    const cutDesc = lowQuality
+      ? CUT_LOW[ idx % CUT_LOW.length ]
+      : CUT_PREMIUM[ idx % CUT_PREMIUM.length ];
+
+    return {
+      img: slot.img,
+      P: slot.P,
+      classTitle: slot.classTitle,
+      savoryDigit: slot.savoryDigit,
+      savoryWord,
+      cutDesc
+    };
+  });
+
+  // Shuffle for PDF so guests still have to arrange SMALL -> LARGER
+  const shuffledForDisplay = shuffleArray([...displayCards]);
+
+  // Draw poster (with correct footer text logic)
+  const poster = await drawPoster(shuffledForDisplay, n);
+
+  // Make PDF
+  let pdfBytes;
+  try {
+    const { PDFDocument } = PDFLib;
+    if (!PDFDocument) throw new Error("no pdf-lib");
+    pdfBytes = await canvasToPdfBytes(poster);
+  } catch(e){
+    console.warn("PDF build error", e);
+    alert("PDF failed to build.");
+    return;
+  }
+
+  // Blob for upload and optional local download
+  const blob = new Blob([pdfBytes], {type:"application/pdf"});
+
+  // 1. Upload to bucket through Cloud Run signed URL
+  await uploadToCloudSignedUrl(blob);
+
+  // 2. Also save locally for backup/printing
+  try {
+    const dl = document.createElement("a");
+    dl.href = URL.createObjectURL(blob);
+    dl.download = "menu_current.pdf";
+    dl.click();
+  } catch(e){
+    console.warn("local download fallback", e);
+    const w = window.open();
+    const url = poster.toDataURL("image/png");
+    w.document.write('<img src="'+url+'" style="width:100%">');
+    w.document.close();
+    w.focus();
+    w.print();
+  }
 }
 </script>
 </body>
