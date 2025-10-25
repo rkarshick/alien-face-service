@@ -357,7 +357,7 @@ async function runPipeline(){
   const slots = kept.map((r,i)=>{
     const cropInfo = cropCentered(snapshotImg,r);
     const seed = detSeed(cropInfo.rect, snapshotImg);
-    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole)
+    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole body)
     return {
       img: cropInfo.image,
       posX: cropInfo.rect.x,
