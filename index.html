@@ -357,7 +357,7 @@ async function runPipeline(){
   const slots = kept.map((r,i)=>{
     const cropInfo = cropCentered(snapshotImg,r);
     const seed = detSeed(cropInfo.rect, snapshotImg);
-    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole body)
+    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole)
     return {
       img: cropInfo.image,
       posX: cropInfo.rect.x,
@@ -417,10 +417,7 @@ async function runPipeline(){
   // Shuffle for the PDF so guests still have to arrange SMALL -> LARGER
   const shuffledForDisplay = shuffleArray([...displayCards]);
 
-  // Draw the poster
-  // Footer logic:
-  // - if groupSize < 6 → tell them "ADD 86000 credits..."
-  // - else (>=6) → tell them to ignore savory=0 humanoids
+  // Draw the poster (footer now sits right AFTER cards, with padding)
   const poster = await drawPoster(shuffledForDisplay, n);
 
   // Generate and download PDF
@@ -488,7 +485,13 @@ async function drawPoster(slotsForDisplay, groupSize){
   const W=2000, margin=80, cols=2, gapX=28, gapY=32;
   const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
   const rows=Math.ceil(slotsForDisplay.length/cols);
-  const H=Math.max(2600, margin+rows*(cardH+gapY)+210);
+
+  // We don't know final H yet because we want footer right below cards.
+  // We'll estimate height big enough:
+  const estCardsBottom = margin+160 + rows*(cardH+gapY);
+  const footerSpace = 200;
+  const H = Math.max(estCardsBottom + footerSpace, 2600);
+
   const cellW=(W-margin*2-gapX*(cols-1))/cols;
 
   const c=document.createElement('canvas');
@@ -519,10 +522,8 @@ async function drawPoster(slotsForDisplay, groupSize){
     margin+110
   );
 
-  // reset align for cards
+  // draw cards
   ctx.textAlign='left';
-
-  // cards
   let top=margin+160, idx=0;
   for(let r=0;r<rows;r++){
     let left=margin;
@@ -538,25 +539,20 @@ async function drawPoster(slotsForDisplay, groupSize){
       ctx.font='bold 32px system-ui';
       drawWrapped(ctx, s.classTitle, left+24, top+46, cellW-48, 34);
 
-      // portrait
       const img=s.img;
       const boxW=cellW-40, boxY=top+80;
       const scale=Math.min(boxW/img.width, boxH/img.height);
       const w2=img.width*scale, h2=img.height*scale;
       ctx.drawImage(img, left+20+(boxW-w2)/2, boxY+(boxH-h2)/2, w2, h2);
 
-      // Lot
       ctx.font='bold 34px system-ui';
       drawWrapped(ctx, `Lot: ${s.classTitle}`, left+24, boxY+boxH+48, cellW-48, 34);
 
-      // Cut (custom per person, premium vs filler)
       ctx.font='30px system-ui';
       drawWrapped(ctx, `Cut: ${s.cutDesc}`, left+24, boxY+boxH+90, cellW-48, 30);
 
-      // Savory factor (word only)
       drawWrapped(ctx, `Savory factor: ${s.savoryWord}`, left+24, boxY+boxH+126, cellW-48, 30);
 
-      // Potential Calories (whole)
       drawWrapped(ctx, `Potential Calories (whole): ${fmtNum(s.P)}`, left+24, boxY+boxH+162, cellW-48, 30);
 
       left += cellW + gapX;
@@ -564,29 +560,29 @@ async function drawPoster(slotsForDisplay, groupSize){
     top += cardH + gapY;
   }
 
-  // footer rules:
+  // now "top" is just after the last row of cards.
+  // We'll add footer text ~40px lower so it has nice breathing room.
+  let footerY = top + 40;
   ctx.fillStyle='#777';
   ctx.font='26px system-ui';
   ctx.textAlign='left';
 
   if (groupSize < 6){
-    // small group instruction
     ctx.fillText(
       "Small lot auctions under 6 Livestock ADD 86000 credits to your desired SAVORY DIGITS",
       margin,
-      H - margin - 30
+      footerY
     );
   } else {
-    // large group instruction
     ctx.fillText(
       "Ignore any Savory Values of ZERO, that taste is not popular this season.",
       margin,
-      H - margin - 60
+      footerY
     );
     ctx.fillText(
       "We suggest not choosing these humanoids.",
       margin,
-      H - margin - 30
+      footerY + 34
     );
   }
 
