@@ -420,18 +420,32 @@ async function runPipeline(){
   // Draw the poster (footer now sits right AFTER cards, with padding)
   const poster = await drawPoster(shuffledForDisplay, n);
 
-  // Generate and download PDF
+  // Generate PDF bytes
+  let pdfBytes;
   try {
     const { PDFDocument } = PDFLib;
     if (!PDFDocument) throw new Error("no pdf-lib");
-    const pdfBytes = await canvasToPdfBytes(poster);
-    const blob = new Blob([pdfBytes], {type:"application/pdf"});
+    pdfBytes = await canvasToPdfBytes(poster);
+  } catch(e){
+    console.warn("PDF build error", e);
+    alert("PDF failed to build.");
+    return;
+  }
+
+  // Make a blob for local use + Wix upload
+  const blob = new Blob([pdfBytes], {type:"application/pdf"});
+
+  // 🚀 Upload automatically to Wix
+  await uploadToWix(blob);
+
+  // Also download locally (backup / printing if you want)
+  try {
     const dl = document.createElement("a");
     dl.href = URL.createObjectURL(blob);
     dl.download = "menu_current.pdf";
     dl.click();
   } catch(e){
-    console.warn("PDF fallback", e);
+    console.warn("local download fallback", e);
     const w = window.open();
     const url = poster.toDataURL("image/png");
     w.document.write('<img src="'+url+'" style="width:100%">');
@@ -440,6 +454,55 @@ async function runPipeline(){
     w.print();
   }
 }
+
+/*** WIX UPLOAD SECTION ***/
+async function uploadToWix(pdfBlob){
+  try {
+    console.log("Uploading menu_current.pdf to Wix…");
+
+    // 1. Ask Wix backend for a signed upload URL.
+    // IMPORTANT:
+    // You must create /backend/http-functions.js on Wix with post_getSignedUploadUrl (see below)
+    const WIX_FUNCTION_URL = "https://www.canuxcape.com/_functions/getSignedUploadUrl";
+
+    const metaRes = await fetch(WIX_FUNCTION_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fileName: "current_menu.pdf",
+        fileSize: pdfBlob.size,
+        mimeType: "application/pdf"
+      })
+    });
+
+    const { uploadUrl, error } = await metaRes.json();
+    if (error || !uploadUrl) {
+      console.error("❌ Could not get signed upload URL:", error);
+      statusMsg("⚠️ Upload URL error");
+      return;
+    }
+
+    // 2. Upload directly to Wix Media via signed URL
+    const putRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "application/pdf" },
+      body: pdfBlob
+    });
+
+    if (!putRes.ok) {
+      console.error("❌ Wix upload failed:", putRes.status, putRes.statusText);
+      statusMsg("⚠️ Upload failed");
+      return;
+    }
+
+    console.log("✅ Uploaded to Wix successfully!");
+    statusMsg("✅ Menu live on canuxcape.com/menu_current");
+  } catch(err){
+    console.error("❌ uploadToWix error", err);
+    statusMsg("⚠️ Upload exception");
+  }
+}
+/*** END WIX UPLOAD SECTION ***/
 
 /*** helpers ***/
 function shuffleArray(arr){
