@@ -14,18 +14,24 @@
   }
   main { padding:16px; max-width:1100px; margin:auto; }
   h2 { margin: 8px 0 12px; }
-  #stage { position:relative; }
-  #cam, #preview, #overlay {
+  #stage {
+    position:relative;
+  }
+  #cam {
+    background:#000;
+    width:100%;
+    max-height:60vh;
+    object-fit:cover;
+    border-radius:12px;
+    display:block;
+  }
+  #preview {
+    background:#000;
     width:100%;
     max-height:60vh;
     object-fit:contain;
     border-radius:12px;
-    background:#000;
-  }
-  #overlay {
-    position:absolute;
-    left:0; top:0;
-    pointer-events:none;
+    display:none;
   }
   .row {
     display:flex;
@@ -83,27 +89,22 @@
 
   <div id="stage">
     <video id="cam" playsinline muted></video>
-    <img id="preview" alt="snapshot preview" style="display:none"/>
-    <canvas id="overlay"></canvas>
+    <img id="preview" alt="snapshot preview"/>
   </div>
-  <div class="hint">Line everyone up, get faces in frame, then Snap.</div>
+  <div class="hint">Line everyone up, fill the frame, then Snap.</div>
 
   <div class="row">
     <button id="start">Start Camera</button>
     <button id="snap">Snap Photo</button>
     <input type="file" id="file" accept="image/*"/>
     <button id="make">Make PDF + Code</button>
-    <label style="font-size:14px;">
-      <input type="checkbox" id="dbg" checked> Debug overlay
-    </label>
   </div>
 
-  <div class="panel">
-    <div style="font-weight:600; margin-bottom:6px">Detection debug</div>
+  <div class="panel" style="font-size:13px;">
     <div class="kv">
       <div>Image (w×h)</div><div><span id="dims">—</span></div>
       <div>Faces found</div><div><span id="faces">—</span></div>
-      <div>Detector</div><div><span id="loader">Cloud Run → Vision API</span></div>
+      <div>Detector</div><div>Cloud Run → Vision API</div>
     </div>
   </div>
 
@@ -118,26 +119,23 @@
 <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
 
 <script>
-/*** 1. YOUR CLOUD RUN URL HERE ***/
+/*** CONFIG ***/
 const CLOUD_FUNCTION_URL = "https://alien-face-service-791433334355.us-east4.run.app/detectFaces";
 
-/*** 2. Puzzle / menu config ***/
-const LOCK_CODE_5 = 86753; // this is your physical lock code
+const LOCK_CODE_5 = 86753; // your physical lock code
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
-const MAX_SLOTS   = 8;              // max faces we keep
-const WHOLE_MIN   = 80000, WHOLE_MAX = 220000; // calorie range for "whole body"
+const MAX_SLOTS   = 8;
+const WHOLE_MIN   = 80000, WHOLE_MAX = 220000;
 
 const SAVORY_NAMES = [
   "sweet","tangy","smoky","zesty","umami",
   "peppery","citrusy","herbal","earthy","bright"
 ];
-
 const CLASS_TITLES = [
   "Feeder Humanoid","Commercial Feeder","Humanoid Rare Stock",
   "Choice Stock","Prime Stock","Select Stock",
   "Market Class","Premium Consignment"
 ];
-
 const MEAT_DESCRIPTORS = [
   "tender with marbled highlights",
   "fine-grained and evenly marbled",
@@ -151,16 +149,14 @@ const MEAT_DESCRIPTORS = [
   "supple grain and bright marbling"
 ];
 
-/*** 3. DOM refs ***/
+/*** DOM refs ***/
 const statusEl = document.getElementById('status');
 const video    = document.getElementById('cam');
 const preview  = document.getElementById('preview');
-const overlay  = document.getElementById('overlay');
 const startBtn = document.getElementById('start');
 const snapBtn  = document.getElementById('snap');
 const fileIn   = document.getElementById('file');
 const makeBtn  = document.getElementById('make');
-const dbgOn    = document.getElementById('dbg');
 
 const dimsEl   = document.getElementById('dims');
 const facesEl  = document.getElementById('faces');
@@ -170,51 +166,15 @@ const offEl    = document.getElementById('off');
 const lockEl   = document.getElementById('lock');
 lockEl.textContent = String(LOCK_CODE_5).padStart(5,'0');
 
-/*** 4. State ***/
+/*** State ***/
 let snapshotImg = null;
 
-/*** 5. Helpers ***/
+/*** Helpers ***/
 function statusMsg(m){ statusEl.textContent = m; console.log("[status]",m); }
 function setDims(w,h){ dimsEl.textContent = `${w}×${h}`; }
 function setFaces(n){ facesEl.textContent = String(n); }
 
-function drawBoxes(rects, imgEl){
-  if (!dbgOn.checked){
-    overlay.width=0; overlay.height=0;
-    return;
-  }
-  const W = imgEl.naturalWidth || imgEl.width;
-  const H = imgEl.naturalHeight || imgEl.height;
-
-  // whichever is currently displayed (preview after snap OR live video)
-  const baseEl = (preview.style.display==='block') ? preview : video;
-  const dispW = baseEl.clientWidth || baseEl.videoWidth || W;
-  const dispH = baseEl.clientHeight || baseEl.videoHeight || H;
-
-  overlay.width  = dispW;
-  overlay.height = dispH;
-
-  const scaleX = dispW / W;
-  const scaleY = dispH / H;
-
-  const ctx = overlay.getContext('2d');
-  ctx.clearRect(0,0,overlay.width,overlay.height);
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = 'rgba(50,200,80,.9)';
-  ctx.font='14px ui-monospace';
-  ctx.fillStyle='rgba(0,0,0,.4)';
-
-  rects.forEach((r,i)=>{
-    const x=r.x*scaleX, y=r.y*scaleY, w=r.w*scaleX, h=r.h*scaleY;
-    ctx.strokeRect(x,y,w,h);
-    ctx.fillRect(x,y-18, 38, 18);
-    ctx.fillStyle='#fff';
-    ctx.fillText(`#${i+1}`, x+4, y-5);
-    ctx.fillStyle='rgba(0,0,0,.4)';
-  });
-}
-
-/*** 6. Camera + file load ***/
+/*** Camera / file load ***/
 startBtn.onclick = async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -229,16 +189,18 @@ startBtn.onclick = async () => {
     await video.play();
     preview.style.display='none';
     video.style.display='block';
-    overlay.style.display='block';
     statusMsg('🎥 camera ready');
   } catch(e){
-    console.error(e);
+    console.error("getUserMedia error", e);
     alert('Camera blocked. Use HTTPS or localhost on the device.');
   }
 };
 
 snapBtn.onclick = () => {
-  if (!video.srcObject) return;
+  if (!video.srcObject) {
+    console.warn("snap: no video stream");
+    return;
+  }
   const c = document.createElement('canvas');
   const W = video.videoWidth;
   const H = video.videoHeight;
@@ -259,7 +221,10 @@ snapBtn.onclick = () => {
 
 fileIn.onchange = e => {
   const f = e.target.files[0];
-  if(!f) return;
+  if(!f) {
+    console.warn("file input: no file");
+    return;
+  }
   const url = URL.createObjectURL(f);
   const img = new Image();
   img.onload = ()=>{
@@ -281,33 +246,8 @@ fileIn.onchange = e => {
   img.src = url;
 };
 
-/*** 7. Send photo to Cloud Run for face boxes ***/
-async function detectFacesCloud(imgEl){
-  if (!CLOUD_FUNCTION_URL){
-    throw new Error("CLOUD_FUNCTION_URL not set.");
-  }
-
-  const base64Data = await imageToBase64NoPrefix(imgEl);
-
-  const res = await fetch(CLOUD_FUNCTION_URL, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ imageBase64: base64Data })
-  });
-
-  if (!res.ok){
-    const t = await res.text();
-    console.error("Cloud Run error", res.status, t);
-    throw new Error("Cloud Run call failed");
-  }
-
-  const json = await res.json();
-  const faces = (json.faces || []).slice();
-  faces.sort((a,b)=>a.x-b.x);
-  return faces;
-}
-
-function imageToBase64NoPrefix(imgEl){
+/*** Vision call through Cloud Run ***/
+async function imageToBase64NoPrefix(imgEl){
   return new Promise(resolve=>{
     const c = document.createElement('canvas');
     const w = imgEl.naturalWidth  || imgEl.width;
@@ -321,13 +261,37 @@ function imageToBase64NoPrefix(imgEl){
   });
 }
 
-/*** 8. The main pipeline button ***/
+async function detectFacesCloud(imgEl){
+  const base64Data = await imageToBase64NoPrefix(imgEl);
+
+  const res = await fetch(CLOUD_FUNCTION_URL, {
+    method:"POST",
+    headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ imageBase64: base64Data })
+  });
+
+  const text = await res.text();
+  if (!res.ok){
+    console.error("Cloud Run error", res.status, text);
+    throw new Error("Cloud Run call failed");
+  }
+
+  let json;
+  try { json = JSON.parse(text); }
+  catch(e) { throw new Error("Bad JSON from server"); }
+
+  const faces = (json.faces || []).slice();
+  faces.sort((a,b)=>a.x-b.x); // left->right
+  return faces;
+}
+
+/*** Main pipeline ***/
 makeBtn.onclick = async () => {
   try {
     await runPipeline();
   } catch(e){
-    console.error(e);
-    alert("Pipeline error (see console).");
+    console.error("runPipeline error", e);
+    alert("Pipeline error. " + e.message);
   }
 };
 
@@ -339,6 +303,7 @@ async function runPipeline(){
   await snapshotImg.decode();
 
   statusMsg("🔍 detecting faces…");
+
   let faces = [];
   try {
     faces = await detectFacesCloud(snapshotImg);
@@ -359,22 +324,19 @@ async function runPipeline(){
     statusMsg(`👤 faces: ${faces.length}`);
   }
 
-  drawBoxes(faces, snapshotImg);
   setFaces(faces.length);
 
-  // Only keep up to MAX_SLOTS people
+  // cap to MAX_SLOTS (8)
   const kept = faces.slice(0, MAX_SLOTS);
 
-  // Crop each head+shoulders
-  const crops = kept.map(r => cropCentered(snapshotImg,r));
-
-  // Build menu slot objects
-  const slots = crops.map((c,i)=>{
-    const seed = detSeed(c.rect, snapshotImg);
-    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1));
+  // crop and build slot data for each detected person
+  const slots = kept.map((r,i)=>{
+    const cropInfo = cropCentered(snapshotImg,r);
+    const seed = detSeed(cropInfo.rect, snapshotImg);
+    const P = WHOLE_MIN + (seed % (WHOLE_MAX - WHOLE_MIN + 1)); // Potential Calories (whole)
     return {
-      img: c.image,
-      posX: c.rect.x,
+      img: cropInfo.image,
+      posX: cropInfo.rect.x,
       P,
       classTitle: CLASS_TITLES[i % CLASS_TITLES.length],
       meatDesc: MEAT_DESCRIPTORS[(seed+i) % MEAT_DESCRIPTORS.length],
@@ -382,32 +344,37 @@ async function runPipeline(){
     };
   });
 
-  // Order by Potential Calories ascending
-  const ordered = slots.sort((a,b)=> a.P===b.P ? a.posX-b.posX : a.P-b.P);
+  // TRUE ORDER BY SIZE: sort ascending by Potential Calories
+  const orderedByCalories = [...slots].sort((a,b)=> a.P===b.P ? a.posX-b.posX : a.P-b.P);
 
-  // Assign savory digits so final code is always 86753,
-  // but we do NOT display the digit next to Savory factor anymore.
-  const n = ordered.length;
+  // assign savory digits to orderedByCalories for puzzle math
+  const n = orderedByCalories.length;
   let digits = [];
   if (n>=5){
     digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
   } else {
     digits = LOCK_DIGITS.slice(5-n);
   }
-  for (let i=0;i<n;i++) ordered[i].savoryDigit = digits[i];
+  for (let i=0;i<n;i++) {
+    orderedByCalories[i].savoryDigit = digits[i];
+  }
 
-  // Compute raw and offset for the puzzle math display
+  // puzzle math
   const rawInt = parseInt(digits.join(''),10);
   const rawStr = digits.join('');
   rawEl.textContent = rawStr;
+
   const offset = (LOCK_CODE_5 - rawInt + 100000) % 100000;
   const offsetStr = String(offset).padStart(5,'0');
   offEl.textContent = offsetStr;
 
-  // Build poster canvas
-  const poster = await drawPoster(ordered, offsetStr);
+  // DISPLAY ORDER: shuffle so players must figure "SMALL to LARGER"
+  const shuffledForDisplay = shuffleArray([...orderedByCalories]);
 
-  // Generate PDF or fallback print
+  // build poster with shuffled order
+  const poster = await drawPoster(shuffledForDisplay, n, offsetStr);
+
+  // make PDF, download
   try {
     const { PDFDocument } = PDFLib;
     if (!PDFDocument) throw new Error("no pdf-lib");
@@ -428,9 +395,17 @@ async function runPipeline(){
   }
 }
 
-/*** 9. Cropping, layout, PDF helpers ***/
+/*** helpers ***/
+function shuffleArray(arr){
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 function cropCentered(imgEl, faceRect){
-  // expand around face to include shoulders
+  // expand detection box to shoulders
   const cx = faceRect.x + faceRect.w/2;
   const cy = faceRect.y + faceRect.h/2;
   const newW = faceRect.w * 2.0;
@@ -448,7 +423,6 @@ function cropCentered(imgEl, faceRect){
 }
 
 function detSeed(rect,imgEl){
-  // deterministic-ish number so same person → same calories each run
   const mix=(h,x)=>(((h^x)>>>0)*16777619)>>>0;
   let h=0x811c9dc5>>>0;
   h=mix(h,rect.x|0);
@@ -460,12 +434,12 @@ function detSeed(rect,imgEl){
   return h>>>0;
 }
 
-async function drawPoster(slots,offsetStr){
-  // Layout: 2 columns of "cards"
+async function drawPoster(slotsForDisplay, groupSize, offsetStr){
+  // Layout constants
   const W=2000, margin=80, cols=2, gapX=28, gapY=32;
-  const boxH=520, textAreaH=220, cardH=boxH+textAreaH+100;
-  const rows=Math.ceil(slots.length/cols);
-  const H=Math.max(2400, margin+rows*(cardH+gapY)+120);
+  const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
+  const rows=Math.ceil(slotsForDisplay.length/cols);
+  const H=Math.max(2600, margin+rows*(cardH+gapY)+160);
   const cellW=(W-margin*2-gapX*(cols-1))/cols;
 
   const c=document.createElement('canvas');
@@ -476,67 +450,66 @@ async function drawPoster(slots,offsetStr){
   ctx.fillStyle='#fff';
   ctx.fillRect(0,0,W,H);
 
-  // title
+  // main title
   ctx.fillStyle='#000';
   ctx.font='bold 72px system-ui';
   ctx.fillText('Galactic Tasting Menu — New for Upcoming Harvest!', margin, margin+10);
 
-  let top=margin+70, idx=0;
+  // subtitle lines
+  ctx.font='32px system-ui';
+  ctx.fillText('Get your event IN ORDER to attend the Galaxy\'s biggest Humanoid Livestock Auction!', margin, margin+70);
+  ctx.fillText('From SMALL to LARGER, we have everything you need!', margin, margin+110);
+
+  // cards
+  let top=margin+150, idx=0;
   for(let r=0;r<rows;r++){
     let left=margin;
     for(let col=0; col<cols; col++){
-      if(idx>=slots.length) break;
-      const s=slots[idx++];
+      if(idx>=slotsForDisplay.length) break;
+      const s=slotsForDisplay[idx++];
 
       // card background
       ctx.fillStyle='#f7f7f7';
       roundRect(ctx,left,top,cellW,cardH,22);
       ctx.fill();
 
-      // class title
       ctx.fillStyle='#000';
       ctx.font='bold 32px system-ui';
       drawWrapped(ctx, s.classTitle, left+24, top+46, cellW-48, 34);
 
-      // head/shoulders image box
+      // portrait
       const img=s.img;
       const boxW=cellW-40, boxY=top+80;
       const scale=Math.min(boxW/img.width, boxH/img.height);
       const w2=img.width*scale, h2=img.height*scale;
       ctx.drawImage(img, left+20+(boxW-w2)/2, boxY+(boxH-h2)/2, w2, h2);
 
-      // lot line (renamed, still shows title as requested)
+      // details
       ctx.font='bold 34px system-ui';
       drawWrapped(ctx, `Lot: ${s.classTitle}`, left+24, boxY+boxH+48, cellW-48, 34);
 
-      // cut description
       ctx.font='30px system-ui';
-      drawWrapped(ctx,
-        `Cut: ${s.meatDesc}`,
-        left+24, boxY+boxH+90, cellW-48, 30
-      );
+      drawWrapped(ctx, `Cut: ${s.meatDesc}`, left+24, boxY+boxH+90, cellW-48, 30);
 
-      // savory factor (NO digit shown here anymore)
-      drawWrapped(ctx,
-        `Savory factor: ${SAVORY_NAMES[s.savoryDigit]}`,
-        left+24, boxY+boxH+126, cellW-48, 30
-      );
+      drawWrapped(ctx, `Savory factor: ${SAVORY_NAMES[s.savoryDigit]}`, left+24, boxY+boxH+126, cellW-48, 30);
 
-      // potential calories
-      drawWrapped(ctx,
-        `Potential Calories (whole): ${fmtNum(s.P)}`,
-        left+24, boxY+boxH+162, cellW-48, 30
-      );
+      drawWrapped(ctx, `Potential Calories (whole): ${fmtNum(s.P)}`, left+24, boxY+boxH+162, cellW-48, 30);
 
       left += cellW + gapX;
     }
     top += cardH + gapY;
   }
 
-  // footer line with offset
-  ctx.fillStyle='#777';
-  ctx.font='26px ui-monospace';
-  ctx.fillText(`Calibration: Nebula Offset ${offsetStr}`, margin, H - margin);
+  // footer: only show if group is <6 and offset was nonzero
+  if (groupSize < 6 && offsetStr !== "00000"){
+    ctx.fillStyle='#777';
+    ctx.font='26px system-ui';
+    ctx.fillText(
+      `Small lot auctions under 6 Livestock ADD ${offsetStr} to your desired savory digits`,
+      margin,
+      H - margin
+    );
+  }
 
   return c;
 }
