@@ -1,0 +1,13 @@
+{
+  "name": "alien-menu-face-detect",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@google-cloud/vision": "^4.3.2",
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
+  }
+}
