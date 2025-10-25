@@ -122,31 +122,55 @@
 /*** CONFIG ***/
 const CLOUD_FUNCTION_URL = "https://alien-face-service-791433334355.us-east4.run.app/detectFaces";
 
-const LOCK_CODE_5 = 86753; // your physical lock code
+const LOCK_CODE_5 = 86753; // physical lock code
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
-const MAX_SLOTS   = 8;
-const WHOLE_MIN   = 80000, WHOLE_MAX = 220000;
 
+// max faces on menu
+const MAX_SLOTS   = 8;
+
+// Potential Calories (whole body) range
+const WHOLE_MIN   = 80000;
+const WHOLE_MAX   = 220000;
+
+// flavor labels used for "Savory factor"
 const SAVORY_NAMES = [
   "sweet","tangy","smoky","zesty","umami",
   "peppery","citrusy","herbal","earthy","bright"
 ];
+
+// stock titles
 const CLASS_TITLES = [
   "Feeder Humanoid","Commercial Feeder","Humanoid Rare Stock",
   "Choice Stock","Prime Stock","Select Stock",
   "Market Class","Premium Consignment"
 ];
-const MEAT_DESCRIPTORS = [
+
+// nice / premium cut language pool
+const CUT_PREMIUM = [
   "tender with marbled highlights",
   "fine-grained and evenly marbled",
-  "velvety texture, classic marbling",
-  "hearty cut with rich marbling",
-  "silky finish and subtle marbling",
-  "firm bite with balanced marbling",
-  "delicate weave with faint marbling",
-  "robust profile, well-defined marbling",
-  "mellow texture with gentle marbling",
-  "supple grain and bright marbling"
+  "velvety texture and balanced richness",
+  "hearty cut with deep, developed flavor",
+  "silky finish, smooth bite",
+  "supple grain and well-rounded body flavor",
+  "mellow body texture, easy carving",
+  "full profile and satisfying density",
+  "rich-bodied, classic table cut",
+  "stable house cut with predictable yield"
+];
+
+// lower quality / stew / filler cut pool
+const CUT_LOW = [
+  "chewy filler meat, bulk-grade protein",
+  "dense frame cut, best simmered for hours",
+  "workable stew stock, reliable mass",
+  "tough body sections, economical in volume",
+  "slow-braise material, pantry extender",
+  "utility trim cut, broth-friendly portions",
+  "assertive chew, thrifty slow-cook potential",
+  "marrow-forward frame meat for group stew",
+  "hearty bone-adjacent texture, communal pot use",
+  "rugged cut, recommended for stew service"
 ];
 
 /*** DOM refs ***/
@@ -326,10 +350,10 @@ async function runPipeline(){
 
   setFaces(faces.length);
 
-  // cap to MAX_SLOTS (8)
+  // limit to MAX_SLOTS
   const kept = faces.slice(0, MAX_SLOTS);
 
-  // crop and build slot data for each detected person
+  // build slot data (crop + calories)
   const slots = kept.map((r,i)=>{
     const cropInfo = cropCentered(snapshotImg,r);
     const seed = detSeed(cropInfo.rect, snapshotImg);
@@ -338,43 +362,68 @@ async function runPipeline(){
       img: cropInfo.image,
       posX: cropInfo.rect.x,
       P,
-      classTitle: CLASS_TITLES[i % CLASS_TITLES.length],
-      meatDesc: MEAT_DESCRIPTORS[(seed+i) % MEAT_DESCRIPTORS.length],
-      savoryDigit: 0
+      savoryDigit: 0, // will fill in later
+      classTitle: CLASS_TITLES[i % CLASS_TITLES.length]
     };
   });
 
-  // TRUE ORDER BY SIZE: sort ascending by Potential Calories
+  // Sort (true size order) by Potential Calories ascending
   const orderedByCalories = [...slots].sort((a,b)=> a.P===b.P ? a.posX-b.posX : a.P-b.P);
 
-  // assign savory digits to orderedByCalories for puzzle math
+  // Assign savory digits based on calorie order so puzzle math is stable
   const n = orderedByCalories.length;
   let digits = [];
   if (n>=5){
+    // pad front with zeros if >5, then lock digits at end
     digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
   } else {
+    // take the last n digits of LOCK_CODE_5
     digits = LOCK_DIGITS.slice(5-n);
   }
   for (let i=0;i<n;i++) {
     orderedByCalories[i].savoryDigit = digits[i];
   }
 
-  // puzzle math
+  // Compute base puzzle math
   const rawInt = parseInt(digits.join(''),10);
   const rawStr = digits.join('');
   rawEl.textContent = rawStr;
 
-  const offset = (LOCK_CODE_5 - rawInt + 100000) % 100000;
-  const offsetStr = String(offset).padStart(5,'0');
+  const offsetNum = (LOCK_CODE_5 - rawInt + 100000) % 100000;
+  const offsetStr = String(offsetNum).padStart(5,'0');
   offEl.textContent = offsetStr;
 
-  // DISPLAY ORDER: shuffle so players must figure "SMALL to LARGER"
-  const shuffledForDisplay = shuffleArray([...orderedByCalories]);
+  // Now build final card objects for display
+  // We'll attach the savory word and the cut description,
+  // with special handling if savoryDigit === 0 OR savory word is "sweet".
+  const displayCards = orderedByCalories.map((slot, idx) => {
+    const savoryWord = SAVORY_NAMES[ slot.savoryDigit % SAVORY_NAMES.length ];
+    const lowQuality = (slot.savoryDigit === 0) || (savoryWord === "sweet");
 
-  // build poster with shuffled order
-  const poster = await drawPoster(shuffledForDisplay, n, offsetStr);
+    const cutDesc = lowQuality
+      ? CUT_LOW[ idx % CUT_LOW.length ]
+      : CUT_PREMIUM[ idx % CUT_PREMIUM.length ];
 
-  // make PDF, download
+    return {
+      img: slot.img,
+      P: slot.P,
+      classTitle: slot.classTitle,
+      savoryDigit: slot.savoryDigit,
+      savoryWord,
+      cutDesc
+    };
+  });
+
+  // Shuffle for the PDF so guests still have to arrange SMALL -> LARGER
+  const shuffledForDisplay = shuffleArray([...displayCards]);
+
+  // Draw the poster
+  // Footer logic:
+  // - if groupSize < 6 → tell them "ADD 86000 credits..."
+  // - else (>=6) → tell them to ignore savory=0 humanoids
+  const poster = await drawPoster(shuffledForDisplay, n);
+
+  // Generate and download PDF
   try {
     const { PDFDocument } = PDFLib;
     if (!PDFDocument) throw new Error("no pdf-lib");
@@ -405,7 +454,7 @@ function shuffleArray(arr){
 }
 
 function cropCentered(imgEl, faceRect){
-  // expand detection box to shoulders
+  // expand detection box to include shoulders
   const cx = faceRect.x + faceRect.w/2;
   const cy = faceRect.y + faceRect.h/2;
   const newW = faceRect.w * 2.0;
@@ -434,12 +483,12 @@ function detSeed(rect,imgEl){
   return h>>>0;
 }
 
-async function drawPoster(slotsForDisplay, groupSize, offsetStr){
+async function drawPoster(slotsForDisplay, groupSize){
   // Layout constants
   const W=2000, margin=80, cols=2, gapX=28, gapY=32;
   const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
   const rows=Math.ceil(slotsForDisplay.length/cols);
-  const H=Math.max(2600, margin+rows*(cardH+gapY)+160);
+  const H=Math.max(2600, margin+rows*(cardH+gapY)+210);
   const cellW=(W-margin*2-gapX*(cols-1))/cols;
 
   const c=document.createElement('canvas');
@@ -453,22 +502,34 @@ async function drawPoster(slotsForDisplay, groupSize, offsetStr){
   // main title
   ctx.fillStyle='#000';
   ctx.font='bold 72px system-ui';
+  ctx.textAlign='left';
   ctx.fillText('Galactic Tasting Menu — New for Upcoming Harvest!', margin, margin+10);
 
-  // subtitle lines
+  // subtitles centered
   ctx.font='32px system-ui';
-  ctx.fillText('Get your event IN ORDER to attend the Galaxy\'s biggest Humanoid Livestock Auction!', margin, margin+70);
-  ctx.fillText('From SMALL to LARGER, we have everything you need!', margin, margin+110);
+  ctx.textAlign='center';
+  ctx.fillText(
+    "Get you events IN ORDER to attend the Galaxy's biggest Humanoid Livestock Auction!",
+    W/2,
+    margin+70
+  );
+  ctx.fillText(
+    "From SMALL to LARGER, we have everything you need!",
+    W/2,
+    margin+110
+  );
+
+  // reset align for cards
+  ctx.textAlign='left';
 
   // cards
-  let top=margin+150, idx=0;
+  let top=margin+160, idx=0;
   for(let r=0;r<rows;r++){
     let left=margin;
     for(let col=0; col<cols; col++){
       if(idx>=slotsForDisplay.length) break;
       const s=slotsForDisplay[idx++];
 
-      // card background
       ctx.fillStyle='#f7f7f7';
       roundRect(ctx,left,top,cellW,cardH,22);
       ctx.fill();
@@ -484,15 +545,18 @@ async function drawPoster(slotsForDisplay, groupSize, offsetStr){
       const w2=img.width*scale, h2=img.height*scale;
       ctx.drawImage(img, left+20+(boxW-w2)/2, boxY+(boxH-h2)/2, w2, h2);
 
-      // details
+      // Lot
       ctx.font='bold 34px system-ui';
       drawWrapped(ctx, `Lot: ${s.classTitle}`, left+24, boxY+boxH+48, cellW-48, 34);
 
+      // Cut (custom per person, premium vs filler)
       ctx.font='30px system-ui';
-      drawWrapped(ctx, `Cut: ${s.meatDesc}`, left+24, boxY+boxH+90, cellW-48, 30);
+      drawWrapped(ctx, `Cut: ${s.cutDesc}`, left+24, boxY+boxH+90, cellW-48, 30);
 
-      drawWrapped(ctx, `Savory factor: ${SAVORY_NAMES[s.savoryDigit]}`, left+24, boxY+boxH+126, cellW-48, 30);
+      // Savory factor (word only)
+      drawWrapped(ctx, `Savory factor: ${s.savoryWord}`, left+24, boxY+boxH+126, cellW-48, 30);
 
+      // Potential Calories (whole)
       drawWrapped(ctx, `Potential Calories (whole): ${fmtNum(s.P)}`, left+24, boxY+boxH+162, cellW-48, 30);
 
       left += cellW + gapX;
@@ -500,14 +564,29 @@ async function drawPoster(slotsForDisplay, groupSize, offsetStr){
     top += cardH + gapY;
   }
 
-  // footer: only show if group is <6 and offset was nonzero
-  if (groupSize < 6 && offsetStr !== "00000"){
-    ctx.fillStyle='#777';
-    ctx.font='26px system-ui';
+  // footer rules:
+  ctx.fillStyle='#777';
+  ctx.font='26px system-ui';
+  ctx.textAlign='left';
+
+  if (groupSize < 6){
+    // small group instruction
     ctx.fillText(
-      `Small lot auctions under 6 Livestock ADD ${offsetStr} to your desired savory digits`,
+      "Small lot auctions under 6 Livestock ADD 86000 credits to your desired SAVORY DIGITS",
       margin,
-      H - margin
+      H - margin - 30
+    );
+  } else {
+    // large group instruction
+    ctx.fillText(
+      "Ignore any Savory Values of ZERO, that taste is not popular this season.",
+      margin,
+      H - margin - 60
+    );
+    ctx.fillText(
+      "We suggest not choosing these humanoids.",
+      margin,
+      H - margin - 30
     );
   }
 
