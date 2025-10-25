@@ -61,6 +61,7 @@
     border-radius:8px;
     margin:8px 0;
     font-size:14px;
+    word-break: break-word;
   }
   .panel {
     background:#fafafa;
@@ -122,7 +123,7 @@
 /*** CONFIG ***/
 const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app";
 const CLOUD_FUNCTION_URL = CLOUD_RUN_BASE + "/detectFaces";
-const SIGNED_URL_ENDPOINT = CLOUD_RUN_BASE + "/getUploadUrl"; // we'll call this to get signed URL
+const SIGNED_URL_ENDPOINT = CLOUD_RUN_BASE + "/getUploadUrl";
 
 const LOCK_CODE_5 = 86753; // physical lock code
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
@@ -196,7 +197,10 @@ lockEl.textContent = String(LOCK_CODE_5).padStart(5,'0');
 let snapshotImg = null;
 
 /*** Helpers ***/
-function statusMsg(m){ statusEl.textContent = m; console.log("[status]",m); }
+function statusMsg(m){
+  statusEl.textContent = m;
+  console.log("[status]", m);
+}
 function setDims(w,h){ dimsEl.textContent = `${w}×${h}`; }
 function setFaces(n){ facesEl.textContent = String(n); }
 
@@ -290,6 +294,7 @@ async function imageToBase64NoPrefix(imgEl){
 async function detectFacesCloud(imgEl){
   const base64Data = await imageToBase64NoPrefix(imgEl);
 
+  console.log("[faces] calling", CLOUD_FUNCTION_URL);
   const res = await fetch(CLOUD_FUNCTION_URL, {
     method:"POST",
     headers:{ "Content-Type":"application/json" },
@@ -298,14 +303,18 @@ async function detectFacesCloud(imgEl){
 
   const text = await res.text();
   if (!res.ok){
-    console.error("Cloud Run error", res.status, text);
+    console.error("Cloud Run /detectFaces error", res.status, text);
     throw new Error("Cloud Run call failed");
   }
 
   let json;
   try { json = JSON.parse(text); }
-  catch(e) { throw new Error("Bad JSON from server"); }
+  catch(e) {
+    console.error("Bad JSON from server:", text);
+    throw new Error("Bad JSON from server");
+  }
 
+  console.log("[faces] got", json);
   const faces = (json.faces || []).slice();
   faces.sort((a,b)=>a.x-b.x); // left->right
   return faces;
@@ -315,6 +324,9 @@ async function detectFacesCloud(imgEl){
 
 // ask Cloud Run for a temporary signed upload URL to menu_current.pdf
 async function getSignedUrlFromCloud(){
+  statusMsg("🔐 requesting signed upload URL…");
+  console.log("[upload] POST", SIGNED_URL_ENDPOINT);
+
   const res = await fetch(SIGNED_URL_ENDPOINT, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -322,27 +334,37 @@ async function getSignedUrlFromCloud(){
       contentType: "application/pdf"
     })
   });
+
+  const txt = await res.text();
+  console.log("[upload] signed URL raw response:", res.status, txt);
+
   if(!res.ok){
-    console.error("getSignedUrlFromCloud failed", res.status);
-    throw new Error("no signed url");
+    throw new Error("getSignedUrlFromCloud failed status " + res.status);
   }
-  const data = await res.json();
+
+  let data;
+  try { data = JSON.parse(txt); }
+  catch(e){
+    console.error("[upload] JSON parse fail on signed URL:", txt);
+    throw new Error("Signed URL JSON parse error");
+  }
+
   if (!data.uploadUrl){
-    console.error("no uploadUrl field", data);
-    throw new Error("bad response");
+    console.error("[upload] no uploadUrl field", data);
+    throw new Error("Signed URL missing uploadUrl");
   }
+
   return data.uploadUrl;
 }
 
 // PUT the generated PDF blob directly to the signed URL (overwrites menu_current.pdf in bucket)
 async function uploadToCloudSignedUrl(pdfBlob){
   try {
-    statusMsg("☁ uploading menu…");
-
     // 1. get a signed one-time PUT URL from Cloud Run
     const signedUrl = await getSignedUrlFromCloud();
+    console.log("[upload] got signedUrl:", signedUrl);
 
-    // 2. upload the PDF bytes
+    statusMsg("☁ uploading menu PDF to bucket…");
     const putRes = await fetch(signedUrl, {
       method: "PUT",
       headers: {
@@ -351,17 +373,16 @@ async function uploadToCloudSignedUrl(pdfBlob){
       body: pdfBlob
     });
 
+    console.log("[upload] PUT response:", putRes.status, putRes.statusText);
     if (!putRes.ok){
-      console.error("PUT signedUrl failed", putRes.status, putRes.statusText);
-      statusMsg("⚠ upload failed");
-      return;
+      statusMsg("⚠ upload failed at PUT step (" + putRes.status + ")");
+      throw new Error("PUT signedUrl failed " + putRes.status);
     }
 
-    // success!
     statusMsg("✅ Menu live at QR link");
   } catch(err){
     console.error("uploadToCloudSignedUrl error", err);
-    statusMsg("⚠ upload error");
+    statusMsg("⚠ upload error: " + err.message);
   }
 }
 
@@ -430,10 +451,8 @@ async function runPipeline(){
   const n = orderedByCalories.length;
   let digits = [];
   if (n>=5){
-    // pad front with zeros if >5, then lock digits at end
     digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
   } else {
-    // take the last n digits of LOCK_CODE_5
     digits = LOCK_DIGITS.slice(5-n);
   }
   for (let i=0;i<n;i++) {
@@ -549,12 +568,10 @@ function detSeed(rect,imgEl){
 }
 
 async function drawPoster(slotsForDisplay, groupSize){
-  // Layout constants
   const W=2000, margin=80, cols=2, gapX=28, gapY=32;
   const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
   const rows=Math.ceil(slotsForDisplay.length/cols);
 
-  // estimate total height: all cards plus footer space
   const estCardsBottom = margin+160 + rows*(cardH+gapY);
   const footerSpace = 200;
   const H = Math.max(estCardsBottom + footerSpace, 2600);
@@ -565,17 +582,14 @@ async function drawPoster(slotsForDisplay, groupSize){
   c.width=W; c.height=H;
   const ctx=c.getContext('2d');
 
-  // background
   ctx.fillStyle='#fff';
   ctx.fillRect(0,0,W,H);
 
-  // main title
   ctx.fillStyle='#000';
   ctx.font='bold 72px system-ui';
   ctx.textAlign='left';
   ctx.fillText('Galactic Tasting Menu — New for Upcoming Harvest!', margin, margin+10);
 
-  // subtitles centered
   ctx.font='32px system-ui';
   ctx.textAlign='center';
   ctx.fillText(
@@ -589,7 +603,6 @@ async function drawPoster(slotsForDisplay, groupSize){
     margin+110
   );
 
-  // draw cards
   ctx.textAlign='left';
   let top=margin+160, idx=0;
   for(let r=0;r<rows;r++){
@@ -627,7 +640,6 @@ async function drawPoster(slotsForDisplay, groupSize){
     top += cardH + gapY;
   }
 
-  // footer
   let footerY = top + 40;
   ctx.fillStyle='#777';
   ctx.font='26px system-ui';
