@@ -300,12 +300,14 @@ function detSeed(rect,imgEl){
   return h>>>0;
 }
 
-// groupSize -> offset prefix for footer when <5
+// UPDATED: groupSize -> credits prefix for footer when <5
 function calcOffsetPrefix(n){
-  if (n === 1) return "80000";
-  if (n === 2) return "86000";
-  if (n === 3) return "86700";
-  if (n === 4) return "86753";
+  // 4 faces -> savory digits show 6 7 5 3, footer gives 80000
+  // 3 faces -> savory digits show 7 5 3, footer gives 86000
+  // 2 faces -> savory digits show 5 3,   footer gives 86700
+  if (n === 4) return "80000";
+  if (n === 3) return "86000";
+  if (n === 2) return "86700";
   return "";
 }
 
@@ -400,19 +402,31 @@ function shuffleArray(arr){
   return arr;
 }
 
+// UPDATED: build footer text based on group size
 function calcFooterLines(groupSize){
+  // 6 or more faces:
+  //   they'll see leading 0 savory digits for extras — tell players to ignore zeros
   if (groupSize >= 6){
     return [
       "Ignore any Savory Values of ZERO, that taste is not popular this season.",
       "We suggest not choosing these humanoids."
     ];
   }
+
+  // exactly 5 faces:
+  //   they get all 5 digits (86753) from savory order, so no footer hint
   if (groupSize === 5){
     return [];
   }
+
+  // 2, 3, or 4 faces:
+  //   they only get the tail digits in the savory order,
+  //   so we give them the missing 'front digits' as credits
   const prefix = calcOffsetPrefix(groupSize);
   return [
-    "Small lot auctions under 5 Livestock ADD " + prefix + " credits to your desired SAVORY DIGITS"
+    "Small lot auctions under 5 Livestock ADD " +
+    prefix +
+    " credits to your desired SAVORY DIGITS"
   ];
 }
 
@@ -626,7 +640,7 @@ async function runPipeline(){
     // n=5,6,7,8...
     digits = Array(n-5).fill(0).concat(LOCK_DIGITS);
   } else {
-    // n=1..4
+    // n=2,3,4
     digits = LOCK_DIGITS.slice(5-n);
   }
   for (let i=0;i<n;i++) {
