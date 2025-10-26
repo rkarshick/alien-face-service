@@ -125,7 +125,7 @@ const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app
 const CLOUD_FUNCTION_URL = CLOUD_RUN_BASE + "/detectFaces";
 const DIRECT_UPLOAD_ENDPOINT = CLOUD_RUN_BASE + "/uploadPdfDirect";
 
-const LOCK_CODE_5 = 86753; // physical lock code (5 digits)
+const LOCK_CODE_5 = 87653; // physical lock code (5 digits)
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
 
 const MAX_SLOTS   = 8; // max faces/slots on poster
@@ -139,7 +139,7 @@ const SAVORY_NAMES = [
 ];
 
 const CLASS_TITLES = [
-  "Feeder Humanoid","Commercial Feeder","Humanoid Rare Stock",
+  "Feeder Humanoid","Commercial Feeder","Rare Select",
   "Choice Stock","Prime Stock","Select Stock",
   "Market Class","Premium Consignment"
 ];
@@ -399,39 +399,39 @@ function calcFooterLines(groupSize){
   // tell them to ignore zeros
   if (groupSize >= 6){
     return [
-      "Ignore any Savory Values of ZERO, that taste is not popular this season.",
-      "We suggest not choosing these humanoids."
+      "Ignore any Savory Values of ZERO... that flavor is not popular this season.",
+      "We suggest NOT using these less tasty humanoids!"
     ];
   }
 
   // exactly 5:
-  // they already get all 5 savory digits in order (8 6 7 5 3),
+  // they already get all 5 savory digits in order (8 7 6 5 3),
   // so no hint/footer needed
   if (groupSize === 5){
     return [];
   }
 
-  // groupSize 4 → savory digits on poster are 6 7 5 3
+  // groupSize 4 → savory digits on poster are 7 6 5 3
   // missing prefix is 80000
   if (groupSize === 4){
     return [
-      "Small lot auctions under 5 Livestock ADD 80000 credits to your desired SAVORY DIGITS"
+      "Small lot auctions of four Livestock only, please place 8 credits FIRST IN ORDER to secure your bid"
     ];
   }
 
-  // groupSize 3 → savory digits are 7 5 3
-  // missing prefix is 86000
+  // groupSize 3 → savory digits are 6 5 3
+  // missing prefix is 87000
   if (groupSize === 3){
     return [
-      "Small lot auctions under 5 Livestock ADD 86000 credits to your desired SAVORY DIGITS"
+      "Small lot auctions of three Livestock only, please place 87 credits FIRST IN ORDER to secure your bid"
     ];
   }
 
   // groupSize 2 → savory digits are 5 3
-  // missing prefix is 86700
+  // missing prefix is 87600
   if (groupSize === 2){
     return [
-      "Small lot auctions under 5 Livestock ADD 86700 credits to your desired SAVORY DIGITS"
+      "Small lot auctions of two Livestock only, please place 876 credits FIRST IN ORDER to secure your bid"
     ];
   }
 
@@ -470,12 +470,12 @@ async function drawPoster(slotsForDisplay, groupSize){
   ctx.font='32px system-ui';
   ctx.textAlign='center';
   ctx.fillText(
-    "Get you events IN ORDER to attend the Galaxy's biggest Humanoid Livestock Auction!",
+    "From a SMALL feeder, TO the LAREST CALORIE packed beast - we have what you want to ORDER!",
     W/2,
     margin+70
   );
   ctx.fillText(
-    "From SMALL to LARGER, we have everything you need!",
+    "Just enter your 5 Digit HARVEST ID/ SAVOR NUMBER to preview Auction Supply.  ",
     W/2,
     margin+110
   );
