@@ -123,32 +123,27 @@
 /*** CONFIG ***/
 const CLOUD_RUN_BASE = "https://alien-face-service-791433334355.us-east4.run.app";
 const CLOUD_FUNCTION_URL = CLOUD_RUN_BASE + "/detectFaces";
-const SIGNED_URL_ENDPOINT = CLOUD_RUN_BASE + "/getUploadUrl";
+const DIRECT_UPLOAD_ENDPOINT = CLOUD_RUN_BASE + "/uploadPdfDirect";
 
 const LOCK_CODE_5 = 86753; // physical lock code (5 digits)
 const LOCK_DIGITS = String(LOCK_CODE_5).padStart(5,'0').split('').map(d=>parseInt(d,10));
 
-// max faces on menu poster (we'll cap at 8)
-const MAX_SLOTS   = 8;
+const MAX_SLOTS   = 8; // max faces/slots on poster
 
-// Potential Calories (whole body) range
 const WHOLE_MIN   = 80000;
 const WHOLE_MAX   = 220000;
 
-// flavor labels used for "Savory factor"
 const SAVORY_NAMES = [
   "sweet","tangy","smoky","zesty","umami",
   "peppery","citrusy","herbal","earthy","bright"
 ];
 
-// stock titles
 const CLASS_TITLES = [
   "Feeder Humanoid","Commercial Feeder","Humanoid Rare Stock",
   "Choice Stock","Prime Stock","Select Stock",
   "Market Class","Premium Consignment"
 ];
 
-// nice / premium cut language pool
 const CUT_PREMIUM = [
   "tender with marbled highlights",
   "fine-grained and evenly marbled",
@@ -162,7 +157,6 @@ const CUT_PREMIUM = [
   "stable house cut with predictable yield"
 ];
 
-// lower quality / stew / filler cut pool
 const CUT_LOW = [
   "chewy filler meat, bulk-grade protein",
   "dense frame cut, best simmered for hours",
@@ -276,9 +270,7 @@ fileIn.onchange = e => {
   img.src = url;
 };
 
-/*** CORE HELPERS NEEDED EARLY ***/
-
-// expand a face box to include shoulders and crop that region
+/*** CORE HELPERS ***/
 function cropCentered(imgEl, faceRect){
   const cx = faceRect.x + faceRect.w/2;
   const cy = faceRect.y + faceRect.h/2;
@@ -296,7 +288,6 @@ function cropCentered(imgEl, faceRect){
   return { image:c, rect:{x,y,w,h} };
 }
 
-// deterministic-ish seed per face crop, used to pick Potential Calories
 function detSeed(rect,imgEl){
   const mix=(h,x)=>(((h^x)>>>0)*16777619)>>>0;
   let h=0x811c9dc5>>>0;
@@ -318,7 +309,7 @@ function calcOffsetPrefix(n){
   return "";
 }
 
-/*** FACE DETECTION (Cloud Run) ***/
+/*** FACE DETECTION ***/
 async function imageToBase64NoPrefix(imgEl){
   return new Promise(resolve=>{
     const c = document.createElement('canvas');
@@ -362,105 +353,51 @@ async function detectFacesCloud(imgEl){
   return faces;
 }
 
-/*** SIGNED UPLOAD HELPERS (Cloud Run + GCS) ***/
+/*** DIRECT UPLOAD TO CLOUD RUN (no GCS CORS) ***/
+async function uploadPdfDirectToCloudRun(pdfBlob){
+  statusMsg("☁ uploading menu_current.pdf…");
 
-// ask Cloud Run for a temporary signed upload URL for menu_current.pdf
-async function getSignedUrlFromCloud(){
-  statusMsg("🔐 requesting signed upload URL…");
-  console.log("[upload] POST", SIGNED_URL_ENDPOINT);
+  // convert Blob -> base64 string
+  const pdfBase64 = await blobToBase64(pdfBlob);
 
-  const res = await fetch(SIGNED_URL_ENDPOINT, {
+  const res = await fetch(DIRECT_UPLOAD_ENDPOINT, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({
-      contentType: "application/pdf"
-    })
+    body: JSON.stringify({ pdfBase64 })
   });
 
   const txt = await res.text();
-  console.log("[upload] signed URL raw response:", res.status, txt);
-  statusMsg("signedURL status " + res.status);
+  console.log("[uploadDirect] response", res.status, txt);
 
-  if(!res.ok){
-    throw new Error("getSignedUrlFromCloud failed status " + res.status);
+  if (!res.ok){
+    statusMsg("⚠ upload error: " + res.status);
+    throw new Error("uploadPdfDirectToCloudRun failed " + res.status + " " + txt);
   }
 
-  let data;
-  try { data = JSON.parse(txt); }
-  catch(e){
-    console.error("[upload] JSON parse fail on signed URL:", txt);
-    throw new Error("Signed URL JSON parse error");
-  }
-
-  if (!data.uploadUrl){
-    console.error("[upload] no uploadUrl field", data);
-    throw new Error("Signed URL missing uploadUrl");
-  }
-
-  return data.uploadUrl;
+  statusMsg("✅ Menu live at QR link");
 }
 
-// do the actual PUT of the pdf blob to the signed URL
-async function uploadToCloudSignedUrl(pdfBlob){
-  try {
-    statusMsg("🔐 getting signed upload URL…");
-    const signedUrl = await getSignedUrlFromCloud();
-    console.log("[upload] got signedUrl:", signedUrl);
-
-    statusMsg("☁ uploading menu_current.pdf…");
-
-    let putRes;
-    try {
-      putRes = await fetch(signedUrl, {
-        method: "PUT",
-        mode: "cors",
-        headers: {
-          "Content-Type": "application/pdf"
-        },
-        body: pdfBlob
-      });
-    } catch(fetchErr) {
-      console.error("[upload] fetch() to signedUrl threw before response:", fetchErr);
-      statusMsg("⚠ upload error: browser blocked PUT");
-      throw fetchErr;
-    }
-
-    console.log("[upload] PUT response:", putRes.status, putRes.statusText);
-    statusMsg("PUT status " + putRes.status);
-
-    if (!putRes.ok){
-      let bodyText = "(no body)";
-      try {
-        bodyText = await putRes.text();
-      } catch(_) {}
-      console.error("[upload] PUT failed body:", bodyText);
-      statusMsg("⚠ upload failed PUT " + putRes.status);
-      throw new Error("PUT signedUrl failed " + putRes.status + " " + putRes.statusText + " " + bodyText);
-    }
-
-    statusMsg("✅ Menu live at QR link");
-  } catch(err){
-    console.error("uploadToCloudSignedUrl error", err);
-    statusMsg("⚠ upload error: " + err.message);
-  }
+// helper: turn Blob -> base64 (no prefix)
+function blobToBase64(blob){
+  return new Promise((resolve,reject)=>{
+    const r = new FileReader();
+    r.onload = () => {
+      const full = r.result; // "data:application/pdf;base64,AAAA..."
+      const b64 = full.split(",")[1];
+      resolve(b64);
+    };
+    r.onerror = reject;
+    r.readAsDataURL(blob);
+  });
 }
 
-/*** PUZZLE HELPER LOGIC ***/
+/*** PUZZLE LOGIC ***/
 function shuffleArray(arr){
   for (let i = arr.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [arr[i], arr[j]] = [arr[j], arr[i]];
   }
   return arr;
-}
-
-/*** POSTER FOOTER LINES ***/
-function calcOffsetPrefix(n){
-  if (n === 1) return "80000";
-  if (n === 2) return "86000";
-  if (n === 3) return "86700";
-  if (n === 4) return "86753";
-  return "";
 }
 
 function calcFooterLines(groupSize){
@@ -479,7 +416,7 @@ function calcFooterLines(groupSize){
   ];
 }
 
-/*** CANVAS → POSTER DRAW ***/
+/*** DRAW POSTER ***/
 async function drawPoster(slotsForDisplay, groupSize){
   const W=2000, margin=80, cols=2, gapX=28, gapY=32;
   const boxH=520, textAreaH=220, cardH=boxH+textAreaH+110;
@@ -495,11 +432,11 @@ async function drawPoster(slotsForDisplay, groupSize){
   c.width=W; c.height=H;
   const ctx=c.getContext('2d');
 
-  // background
+  // bg
   ctx.fillStyle='#fff';
   ctx.fillRect(0,0,W,H);
 
-  // main title
+  // title
   ctx.fillStyle='#000';
   ctx.font='bold 72px system-ui';
   ctx.textAlign='left';
@@ -519,9 +456,10 @@ async function drawPoster(slotsForDisplay, groupSize){
     margin+110
   );
 
-  // draw cards
+  // cards
   ctx.textAlign='left';
   let top=margin+160, idx=0;
+  const boxHeight = 520;
   for(let r=0;r<rows;r++){
     let left=margin;
     for(let col=0; col<cols; col++){
@@ -529,7 +467,7 @@ async function drawPoster(slotsForDisplay, groupSize){
       const s=slotsForDisplay[idx++];
 
       ctx.fillStyle='#f7f7f7';
-      roundRect(ctx,left,top,cellW,cardH,22);
+      roundRect(ctx,left,top,cellW,boxHeight+220+110,22);
       ctx.fill();
 
       ctx.fillStyle='#000';
@@ -538,23 +476,23 @@ async function drawPoster(slotsForDisplay, groupSize){
 
       const img=s.img;
       const boxW=cellW-40, boxY=top+80;
-      const scale=Math.min(boxW/img.width, boxH/img.height);
+      const scale=Math.min(boxW/img.width, boxHeight/img.height);
       const w2=img.width*scale, h2=img.height*scale;
-      ctx.drawImage(img, left+20+(boxW-w2)/2, boxY+(boxH-h2)/2, w2, h2);
+      ctx.drawImage(img, left+20+(boxW-w2)/2, boxY+(boxHeight-h2)/2, w2, h2);
 
       ctx.font='bold 34px system-ui';
-      drawWrapped(ctx, `Lot: ${s.classTitle}`, left+24, boxY+boxH+48, cellW-48, 34);
+      drawWrapped(ctx, `Lot: ${s.classTitle}`, left+24, boxY+boxHeight+48, cellW-48, 34);
 
       ctx.font='30px system-ui';
-      drawWrapped(ctx, `Cut: ${s.cutDesc}`, left+24, boxY+boxH+90, cellW-48, 30);
+      drawWrapped(ctx, `Cut: ${s.cutDesc}`, left+24, boxY+boxHeight+90, cellW-48, 30);
 
-      drawWrapped(ctx, `Savory factor: ${s.savoryWord}`, left+24, boxY+boxH+126, cellW-48, 30);
+      drawWrapped(ctx, `Savory factor: ${s.savoryWord}`, left+24, boxY+boxHeight+126, cellW-48, 30);
 
-      drawWrapped(ctx, `Potential Calories (whole): ${fmtNum(s.P)}`, left+24, boxY+boxH+162, cellW-48, 30);
+      drawWrapped(ctx, `Potential Calories (whole): ${fmtNum(s.P)}`, left+24, boxY+boxHeight+162, cellW-48, 30);
 
       left += cellW + gapX;
     }
-    top += cardH + gapY;
+    top += (boxHeight+220+110) + gapY;
   }
 
   // footer
@@ -572,7 +510,7 @@ async function drawPoster(slotsForDisplay, groupSize){
   return c;
 }
 
-/*** TEXT / CANVAS UTIL ***/
+/*** UTIL DRAW + PDF ***/
 function drawWrapped(ctx,text,x,y,maxWidth,lineHeight){
   const words=text.split(' ');
   let line='', yy=y;
@@ -695,7 +633,7 @@ async function runPipeline(){
     orderedByCalories[i].savoryDigit = digits[i];
   }
 
-  // Show debug puzzle math in UI panel
+  // debug puzzle math in UI panel
   const rawInt = parseInt(digits.join(''),10);
   const rawStr = digits.join('');
   rawEl.textContent = rawStr;
@@ -704,7 +642,7 @@ async function runPipeline(){
   const offsetStr = String(offsetNum).padStart(5,'0');
   offEl.textContent = offsetStr;
 
-  // Build final card info for poster
+  // build final cards for poster
   const displayCards = orderedByCalories.map((slot, idx) => {
     const savoryWord = SAVORY_NAMES[ slot.savoryDigit % SAVORY_NAMES.length ];
     const lowQuality = (slot.savoryDigit === 0) || (savoryWord === "sweet");
@@ -726,7 +664,7 @@ async function runPipeline(){
   // Shuffle for PDF so guests still have to arrange SMALL -> LARGER
   const shuffledForDisplay = shuffleArray([...displayCards]);
 
-  // Draw poster (with correct footer text logic)
+  // Draw poster (with footer lines)
   const poster = await drawPoster(shuffledForDisplay, n);
 
   // Make PDF
@@ -741,11 +679,11 @@ async function runPipeline(){
     return;
   }
 
-  // Blob for upload and optional local download
+  // Blob for upload AND local download
   const blob = new Blob([pdfBytes], {type:"application/pdf"});
 
-  // 1. Upload to bucket through Cloud Run signed URL
-  await uploadToCloudSignedUrl(blob);
+  // 1. Upload PDF bytes directly to Cloud Run -> bucket
+  await uploadPdfDirectToCloudRun(blob);
 
   // 2. Also save locally for backup/printing
   try {
