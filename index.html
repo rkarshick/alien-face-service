@@ -300,17 +300,6 @@ function detSeed(rect,imgEl){
   return h>>>0;
 }
 
-// UPDATED: groupSize -> credits prefix for footer when <5
-function calcOffsetPrefix(n){
-  // 4 faces -> savory digits show 6 7 5 3, footer gives 80000
-  // 3 faces -> savory digits show 7 5 3, footer gives 86000
-  // 2 faces -> savory digits show 5 3,   footer gives 86700
-  if (n === 4) return "80000";
-  if (n === 3) return "86000";
-  if (n === 2) return "86700";
-  return "";
-}
-
 /*** FACE DETECTION ***/
 async function imageToBase64NoPrefix(imgEl){
   return new Promise(resolve=>{
@@ -402,10 +391,12 @@ function shuffleArray(arr){
   return arr;
 }
 
-// UPDATED: build footer text based on group size
+// REMOVE the old calcOffsetPrefix() completely
+// and REPLACE calcFooterLines() with this:
+
 function calcFooterLines(groupSize){
-  // 6 or more faces:
-  //   they'll see leading 0 savory digits for extras — tell players to ignore zeros
+  // 6 or more:
+  // tell them to ignore zeros
   if (groupSize >= 6){
     return [
       "Ignore any Savory Values of ZERO, that taste is not popular this season.",
@@ -413,22 +404,41 @@ function calcFooterLines(groupSize){
     ];
   }
 
-  // exactly 5 faces:
-  //   they get all 5 digits (86753) from savory order, so no footer hint
+  // exactly 5:
+  // they already get all 5 savory digits in order (8 6 7 5 3),
+  // so no hint/footer needed
   if (groupSize === 5){
     return [];
   }
 
-  // 2, 3, or 4 faces:
-  //   they only get the tail digits in the savory order,
-  //   so we give them the missing 'front digits' as credits
-  const prefix = calcOffsetPrefix(groupSize);
-  return [
-    "Small lot auctions under 5 Livestock ADD " +
-    prefix +
-    " credits to your desired SAVORY DIGITS"
-  ];
+  // groupSize 4 → savory digits on poster are 6 7 5 3
+  // missing prefix is 80000
+  if (groupSize === 4){
+    return [
+      "Small lot auctions under 5 Livestock ADD 80000 credits to your desired SAVORY DIGITS"
+    ];
+  }
+
+  // groupSize 3 → savory digits are 7 5 3
+  // missing prefix is 86000
+  if (groupSize === 3){
+    return [
+      "Small lot auctions under 5 Livestock ADD 86000 credits to your desired SAVORY DIGITS"
+    ];
+  }
+
+  // groupSize 2 → savory digits are 5 3
+  // missing prefix is 86700
+  if (groupSize === 2){
+    return [
+      "Small lot auctions under 5 Livestock ADD 86700 credits to your desired SAVORY DIGITS"
+    ];
+  }
+
+  // fallback (shouldn't hit, but just in case)
+  return [];
 }
+
 
 /*** DRAW POSTER ***/
 async function drawPoster(slotsForDisplay, groupSize){
