@@ -403,24 +403,39 @@ async function getSignedUrlFromCloud(){
 // do the actual PUT of the pdf blob to the signed URL
 async function uploadToCloudSignedUrl(pdfBlob){
   try {
+    statusMsg("🔐 getting signed upload URL…");
     const signedUrl = await getSignedUrlFromCloud();
     console.log("[upload] got signedUrl:", signedUrl);
 
-    statusMsg("☁ uploading menu PDF to bucket…");
-    const putRes = await fetch(signedUrl, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/pdf"
-      },
-      body: pdfBlob
-    });
+    statusMsg("☁ uploading menu_current.pdf…");
+
+    let putRes;
+    try {
+      putRes = await fetch(signedUrl, {
+        method: "PUT",
+        mode: "cors",
+        headers: {
+          "Content-Type": "application/pdf"
+        },
+        body: pdfBlob
+      });
+    } catch(fetchErr) {
+      console.error("[upload] fetch() to signedUrl threw before response:", fetchErr);
+      statusMsg("⚠ upload error: browser blocked PUT");
+      throw fetchErr;
+    }
 
     console.log("[upload] PUT response:", putRes.status, putRes.statusText);
     statusMsg("PUT status " + putRes.status);
 
     if (!putRes.ok){
+      let bodyText = "(no body)";
+      try {
+        bodyText = await putRes.text();
+      } catch(_) {}
+      console.error("[upload] PUT failed body:", bodyText);
       statusMsg("⚠ upload failed PUT " + putRes.status);
-      throw new Error("PUT signedUrl failed " + putRes.status + " " + putRes.statusText);
+      throw new Error("PUT signedUrl failed " + putRes.status + " " + putRes.statusText + " " + bodyText);
     }
 
     statusMsg("✅ Menu live at QR link");
@@ -440,6 +455,14 @@ function shuffleArray(arr){
 }
 
 /*** POSTER FOOTER LINES ***/
+function calcOffsetPrefix(n){
+  if (n === 1) return "80000";
+  if (n === 2) return "86000";
+  if (n === 3) return "86700";
+  if (n === 4) return "86753";
+  return "";
+}
+
 function calcFooterLines(groupSize){
   if (groupSize >= 6){
     return [
